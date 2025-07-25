@@ -159,3 +159,5 @@ if __name__ == "__main__":
 
     except Exception as e:
         print(f"❌ Error: {e}")
+
+__all__ = ['graph', 'load_and_process_pdf', 'session_id', 'conversation_count']
