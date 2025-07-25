@@ -1,4 +1,6 @@
 import os
+import uuid
+import time
 from typing import List, TypedDict
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -16,13 +18,20 @@ load_dotenv()
 #Add caching
 set_llm_cache(InMemoryCache())
 
-#Set up OpenAI API key
+#Set up OpenAI API and LangChain keys
 os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
+os.environ["LANGCHAIN_TRACING_V2"] = "true"
+os.environ["LANGCHAIN_API_KEY"] = os.getenv("LANGCHAIN_API_KEY")
+os.environ["LANGCHAIN_PROJECT"] = "RAG-Observability-Demo"
 
 #Initialize components
 embeddings = OpenAIEmbeddings(model="text-embedding-3-large")
 llm = ChatOpenAI(model="gpt-4o-mini")
 vector_store = InMemoryVectorStore(embeddings)
+
+#Define session tracking variables
+session_id = str(uuid.uuid4())
+conversation_count = 0
 
 #Define state for application
 class State(TypedDict):
@@ -56,18 +65,30 @@ def load_and_process_pdf(pdf_path: str):
 
 
 def retrieve(state: State):
+    start_time = time.time()
     retrieved_docs = vector_store.similarity_search(state["question"])
-    return {"context": retrieved_docs}
+    retrieval_time = (time.time() - start_time) * 1000 
+    return {"context": retrieved_docs, "retrieval_time_ms": retrieval_time}
 
 
 def generate(state: State):
+    global conversation_count #To track conversation count
+    conversation_count += 1 
+
     docs_content = "\n\n".join(doc.page_content for doc in state["context"])
 
     #RAG prompt
     prompt = hub.pull("rlm/rag-prompt")
     messages = prompt.invoke(
         {"question": state["question"], "context": docs_content})
-    response = llm.invoke(messages)
+    response = llm.invoke(messages, config={
+                                    "metadata": {
+                                        "session_id": session_id,
+                                        "conversation_number": conversation_count,
+                                        "retrieval_count": len(state["context"]),
+                                        "function_id": "rag_pipeline",
+                                        "retrieval_time_ms": state.get("retrieval_time_ms", 0),
+                                        }})
     return {"answer": response.content}
 
 
@@ -103,6 +124,7 @@ if __name__ == "__main__":
             print("🔍 Searching...")
             result = graph.invoke({"question": question})
             print(f"🤖 Answer: {result['answer']}\n")
+            print(f"Session: {session_id[:8]} | Conversation: {conversation_count}")
 
     except Exception as e:
         print(f"❌ Error: {e}")
