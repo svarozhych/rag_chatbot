@@ -13,6 +13,26 @@ from langchain.cache import InMemoryCache
 from langchain.globals import set_llm_cache
 from dotenv import load_dotenv
 
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource
+
+#OpenTelemetry to Jaeger
+resource = Resource.create({"service.name": "RAG-chatbot"})
+trace.set_tracer_provider(TracerProvider(resource=resource))
+tracer = trace.get_tracer("RAG-chatbot")
+
+otlp_exporter = OTLPSpanExporter(
+    endpoint="http://localhost:4318/v1/traces",
+    headers={}
+)
+
+trace.get_tracer_provider().add_span_processor(
+    BatchSpanProcessor(otlp_exporter)
+)
+
 load_dotenv()
 
 #Add caching
@@ -65,31 +85,42 @@ def load_and_process_pdf(pdf_path: str):
 
 
 def retrieve(state: State):
-    start_time = time.time()
-    retrieved_docs = vector_store.similarity_search(state["question"])
-    retrieval_time = (time.time() - start_time) * 1000 
-    return {"context": retrieved_docs, "retrieval_time_ms": retrieval_time}
+    with tracer.start_as_current_span("document_retrieval") as span:
+        start_time = time.time()
+        retrieved_docs = vector_store.similarity_search(state["question"])
+        retrieval_time = (time.time() - start_time) * 1000 
+
+        span.set_attribute("service.name", "rag-chatbot")
+        span.set_attribute("retrieval_count", len(retrieved_docs))
+        span.set_attribute("query", state["question"])
+
+        return {"context": retrieved_docs, "retrieval_time_ms": retrieval_time}
 
 
 def generate(state: State):
-    global conversation_count #To track conversation count
-    conversation_count += 1 
+    with tracer.start_as_current_span("answer_generation") as span:
+        global conversation_count #To track conversation count
+        conversation_count += 1 
 
-    docs_content = "\n\n".join(doc.page_content for doc in state["context"])
+        span.set_attribute("service.name", "rag-chatbot")
+        span.set_attribute("session_id", session_id)
+        span.set_attribute("conversation_number", conversation_count)
 
-    #RAG prompt
-    prompt = hub.pull("rlm/rag-prompt")
-    messages = prompt.invoke(
-        {"question": state["question"], "context": docs_content})
-    response = llm.invoke(messages, config={
-                                    "metadata": {
-                                        "session_id": session_id,
-                                        "conversation_number": conversation_count,
-                                        "retrieval_count": len(state["context"]),
-                                        "function_id": "rag_pipeline",
-                                        "retrieval_time_ms": state.get("retrieval_time_ms", 0),
-                                        }})
-    return {"answer": response.content}
+        docs_content = "\n\n".join(doc.page_content for doc in state["context"])
+
+        #RAG prompt
+        prompt = hub.pull("rlm/rag-prompt")
+        messages = prompt.invoke(
+            {"question": state["question"], "context": docs_content})
+        response = llm.invoke(messages, config={
+                                        "metadata": {
+                                            "session_id": session_id,
+                                            "conversation_number": conversation_count,
+                                            "retrieval_count": len(state["context"]),
+                                            "function_id": "rag_pipeline",
+                                            "retrieval_time_ms": state.get("retrieval_time_ms", 0),
+                                            }})
+        return {"answer": response.content}
 
 
 #Compile application
