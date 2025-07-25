@@ -1,0 +1,12 @@
+
+langchain
+langchain-openai
+langchain-community
+langgraph
+python-dotenv
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-exporter-otlp-proto-http
+opentelemetry-sdk-resources
+PyPDF2
+pypdf
